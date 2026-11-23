@@ -1,0 +1,37 @@
+{
+  "name": "boutique-inventory-manager",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "VastraLedger — Offline-first Clothing & Boutique Inventory and Sales Manager on Cloudflare Pages + D1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "icons": "node scripts/generate-icons.mjs",
+    "build": "node scripts/build.mjs",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "cf:login": "node scripts/cloudflare.mjs login",
+    "cf:whoami": "node scripts/cloudflare.mjs whoami",
+    "cf:setup": "node scripts/cloudflare.mjs setup",
+    "cf:deploy": "node scripts/cloudflare.mjs deploy",
+    "cf:secrets": "node scripts/cloudflare.mjs secrets",
+    "cf:schema": "node scripts/cloudflare.mjs schema",
+    "cf:status": "node scripts/cloudflare.mjs status"
+  },
+  "dependencies": {
+    "lucide-react": "^0.511.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.5.0",
+    "esbuild": "^0.25.4",
+    "vite": "^6.3.5",
+    "vitest": "^5.1.1",
+    "wrangler": "^4.16.1"
+  }
+}

@@ -1,0 +1,8 @@
+name = "boutique-inventory-manager"
+compatibility_date = "2026-01-01"
+pages_build_output_dir = "deploy-folder"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "boutique-inventory-manager-db"
+database_id = "f8277047-2eb7-4c16-86c9-7adf554ce4fa"

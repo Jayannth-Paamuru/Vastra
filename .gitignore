@@ -1,0 +1,10 @@
+node_modules/
+deploy-folder/
+.wrangler/
+.dev.vars
+.env
+.env.*
+*.log
+.DS_Store
+Thumbs.db
+public/icons/
