@@ -328,3 +328,28 @@ export function validateExpensePayload(body) {
     notes
   };
 }
+
+export function validateTransferPayload(body) {
+  const from_account = cleanString(body.from_account, 100);
+  const to_account = cleanString(body.to_account, 100);
+  if (!from_account) {
+    throw new ValidationError('From account / source is required.');
+  }
+  if (!to_account) {
+    throw new ValidationError('To account / destination is required.');
+  }
+  const amount = parsePositiveNumber(body.amount, 'Transfer amount');
+  const transfer_date = parseIsoDate(body.transfer_date, todayISO());
+  const modeRaw = cleanString(body.payment_mode || 'UPI', 32);
+  const payment_mode = INSTALLMENT_PAYMENT_MODES.includes(modeRaw) ? modeRaw : 'UPI';
+  const notes = cleanString(body.notes, 500);
+
+  return {
+    transfer_date,
+    from_account,
+    to_account,
+    amount,
+    payment_mode,
+    notes
+  };
+}

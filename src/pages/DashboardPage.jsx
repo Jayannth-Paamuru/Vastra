@@ -193,16 +193,29 @@ export default function DashboardPage({ user, onPeriodChange, navigate, refreshK
 
       {/* 4 KPI Summary Cards */}
       <div className="kpi-grid">
-        <div className="kpi-card">
+        <div
+          className="kpi-card"
+          role="button"
+          tabIndex={0}
+          style={{ cursor: 'pointer' }}
+          title="Click to view series & piece availability counts"
+          onClick={() => navigate('/stock-availability')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/stock-availability');
+            }
+          }}
+        >
           <div className="kpi-top">
-            <span className="kpi-label">Items In Stock</span>
+            <span className="kpi-label">Stock Availability</span>
             <div className="kpi-icon">
               <Package size={18} />
             </div>
           </div>
           <div className="kpi-value tabular">{kpis.totalStockQty.toLocaleString('en-IN')}</div>
           <div className="kpi-foot tabular">
-            <span>{kpis.totalUniqueSkus} unique SKUs available</span>
+            <span>{kpis.totalUniqueSkus} SKUs · Tap for series counts</span>
           </div>
         </div>
 

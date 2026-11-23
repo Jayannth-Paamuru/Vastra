@@ -139,8 +139,10 @@ export const SPA_EXACT_ROUTES = new Set([
   '/signup',
   '/inventory',
   '/inventory/new',
+  '/stock-availability',
   '/sales',
   '/expenses',
+  '/transfers',
   '/analytics',
   '/settings'
 ]);

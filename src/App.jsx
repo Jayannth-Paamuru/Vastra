@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  ArrowLeftRight,
   BarChart3,
   Download,
   FileSpreadsheet,
@@ -18,8 +19,10 @@ import AuthPage from './pages/AuthPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
 import InventoryPage from './pages/InventoryPage.jsx';
 import ItemFormPage from './pages/ItemFormPage.jsx';
+import StockAvailabilityPage from './pages/StockAvailabilityPage.jsx';
 import SalesPage from './pages/SalesPage.jsx';
 import ExpensesPage from './pages/ExpensesPage.jsx';
+import TransfersPage from './pages/TransfersPage.jsx';
 import AnalyticsPage from './pages/AnalyticsPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import {
@@ -62,6 +65,7 @@ const NAV_ITEMS = [
   { path: '/inventory', label: 'Inventory', icon: Package },
   { path: '/sales', label: 'Sales Ledger', icon: Receipt },
   { path: '/expenses', label: 'Expenses', icon: Wallet },
+  { path: '/transfers', label: 'Money Transfers', icon: ArrowLeftRight },
   { path: '/analytics', label: 'Analytics', icon: BarChart3 },
   { path: '/settings', label: 'Settings', icon: SettingsIcon }
 ];
@@ -71,8 +75,10 @@ function getPageTitle(pathname) {
   if (pathname === '/inventory') return 'Inventory';
   if (pathname === '/inventory/new') return 'Add New Item';
   if (/^\/inventory\/[^/]+\/edit$/.test(pathname)) return 'Edit Item';
+  if (pathname === '/stock-availability') return 'Stock Availability';
   if (pathname === '/sales') return 'Sales Ledger';
   if (pathname === '/expenses') return 'Expenses & Returns';
+  if (pathname === '/transfers') return 'Money Transfers';
   if (pathname === '/analytics') return 'Analytics';
   if (pathname === '/settings') return 'Settings';
   return 'VastraLedger';
@@ -377,10 +383,21 @@ export default function App() {
         onSyncStateChange={refreshQueueCount}
       />
     );
+  } else if (path === '/stock-availability') {
+    pageElement = (
+      <StockAvailabilityPage
+        user={user}
+        navigate={navigate}
+        onToast={addToast}
+        refreshKey={refreshKey}
+      />
+    );
   } else if (path === '/sales') {
     pageElement = <SalesPage user={user} onToast={addToast} refreshKey={refreshKey} />;
   } else if (path === '/expenses') {
     pageElement = <ExpensesPage user={user} onToast={addToast} refreshKey={refreshKey} />;
+  } else if (path === '/transfers') {
+    pageElement = <TransfersPage user={user} onToast={addToast} refreshKey={refreshKey} />;
   } else if (path === '/analytics') {
     pageElement = <AnalyticsPage user={user} refreshKey={refreshKey} />;
   } else if (path === '/settings') {
@@ -601,7 +618,7 @@ export default function App() {
       </div>
 
       <nav className="bottom-nav" aria-label="Mobile navigation">
-        {NAV_ITEMS.filter((i) => i.path !== '/settings').map((item) => {
+        {NAV_ITEMS.filter((i) => !['/transfers', '/settings'].includes(i.path)).map((item) => {
           const Icon = item.icon;
           const active =
             item.path === '/'

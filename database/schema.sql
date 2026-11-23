@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
   business_name TEXT NOT NULL DEFAULT 'VastraLedger',
   email TEXT UNIQUE,
   phone TEXT UNIQUE,
+  role TEXT NOT NULL DEFAULT 'customer',
   password_hash TEXT NOT NULL,
   password_salt TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS inventory (
   purchase_date TEXT NOT NULL,
   selling_date TEXT,
   status TEXT NOT NULL DEFAULT 'In Stock',
+  show_on_store INTEGER NOT NULL DEFAULT 1,
   thumbnail_data_url TEXT,
   notes TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -139,12 +141,28 @@ CREATE TABLE IF NOT EXISTS expenses (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS money_transfers (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  transfer_date TEXT NOT NULL,
+  from_account TEXT NOT NULL,
+  to_account TEXT NOT NULL,
+  amount REAL NOT NULL CHECK (amount > 0),
+  payment_mode TEXT NOT NULL DEFAULT 'UPI',
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_hash, attempted_at);
 CREATE INDEX IF NOT EXISTS idx_login_attempts_ident ON login_attempts(identifier_hash, attempted_at);
 CREATE INDEX IF NOT EXISTS idx_inventory_user_status ON inventory(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_inventory_user_type ON inventory(user_id, type);
 CREATE INDEX IF NOT EXISTS idx_inventory_user_date ON inventory(user_id, purchase_date);
+CREATE INDEX IF NOT EXISTS idx_inventory_store_visible ON inventory(show_on_store, status);
 CREATE INDEX IF NOT EXISTS idx_item_photos_item ON item_photos(item_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_sales_user_date ON sales(user_id, sale_date);
 CREATE INDEX IF NOT EXISTS idx_sales_user_type ON sales(user_id, type);
@@ -153,3 +171,4 @@ CREATE INDEX IF NOT EXISTS idx_installments_sale ON sale_installments(sale_id, p
 CREATE INDEX IF NOT EXISTS idx_installments_user ON sale_installments(user_id, payment_date);
 CREATE INDEX IF NOT EXISTS idx_expenses_user_date ON expenses(user_id, expense_date);
 CREATE INDEX IF NOT EXISTS idx_expenses_user_cat ON expenses(user_id, category);
+CREATE INDEX IF NOT EXISTS idx_transfers_user_date ON money_transfers(user_id, transfer_date);

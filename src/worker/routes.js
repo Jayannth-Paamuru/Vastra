@@ -30,6 +30,7 @@ import {
   validateInventoryPayload,
   validateReturnPayload,
   validateSalePayload,
+  validateTransferPayload,
   ValidationError
 } from './validation.js';
 
@@ -113,6 +114,8 @@ export async function routeApiRequest(request, env, url) {
     /^\/api\/sales\/[^/]+(\/installments|\/return)?$/.test(pathname) ||
     pathname === '/api/expenses' ||
     /^\/api\/expenses\/[^/]+$/.test(pathname) ||
+    pathname === '/api/transfers' ||
+    /^\/api\/transfers\/[^/]+$/.test(pathname) ||
     pathname === '/api/dashboard' ||
     pathname === '/api/analytics' ||
     pathname === '/api/export';
@@ -690,7 +693,7 @@ export async function routeApiRequest(request, env, url) {
     }
   }
 
-  // --- Return Sold Item (Restores Stock + Adjusts Sale + Optional Refund Expense) ---
+  // --- Return Sold Item ---
   const returnMatch = pathname.match(/^\/api\/sales\/([^/]+)\/return$/);
   if (returnMatch && method === 'POST') {
     const saleId = decodeURIComponent(returnMatch[1]);
@@ -710,8 +713,7 @@ export async function routeApiRequest(request, env, url) {
     const nextReturnedQty = prevReturnedQty + retInput.return_qty;
     const totalSoldQty = Number(sale.quantity_sold) || 1;
     const remainingActiveQty = Math.max(0, totalSoldQty - nextReturnedQty);
-    const nextSaleStatus =
-      remainingActiveQty === 0 ? 'Returned' : 'Partially Returned';
+    const nextSaleStatus = remainingActiveQty === 0 ? 'Returned' : 'Partially Returned';
 
     const prevRefund = Number(sale.refund_amount) || 0;
     const nextRefund = Number((prevRefund + retInput.refund_amount).toFixed(2));
@@ -721,7 +723,10 @@ export async function routeApiRequest(request, env, url) {
     );
 
     const nextAmountPaid = Number(
-      Math.max(0, Number(sale.amount_paid ?? Number(sale.selling_price) * totalSoldQty) - retInput.refund_amount).toFixed(2)
+      Math.max(
+        0,
+        Number(sale.amount_paid ?? Number(sale.selling_price) * totalSoldQty) - retInput.refund_amount
+      ).toFixed(2)
     );
     const nextBalanceDue = Number(
       Math.max(0, Number(sale.selling_price) * remainingActiveQty - nextAmountPaid).toFixed(2)
@@ -750,7 +755,6 @@ export async function routeApiRequest(request, env, url) {
       )
       .run();
 
-    // Restore stock back into inventory
     if (sale.item_id) {
       const inv = await env.DB.prepare(`SELECT * FROM inventory WHERE id = ? AND user_id = ?`)
         .bind(sale.item_id, userId)
@@ -768,7 +772,6 @@ export async function routeApiRequest(request, env, url) {
       }
     }
 
-    // Optionally log refund payout in manual expenses
     let createdExpense = null;
     if (retInput.log_expense && retInput.refund_amount > 0) {
       const expId = crypto.randomUUID();
@@ -1020,7 +1023,9 @@ export async function routeApiRequest(request, env, url) {
     const search = cleanString(searchParams.get('search'), 120);
     if (search) {
       const like = `%${search}%`;
-      clauses.push(`(title LIKE ? OR category LIKE ? OR vendor_name LIKE ? OR related_sku LIKE ? OR notes LIKE ?)`);
+      clauses.push(
+        `(title LIKE ? OR category LIKE ? OR vendor_name LIKE ? OR related_sku LIKE ? OR notes LIKE ?)`
+      );
       params.push(like, like, like, like, like);
     }
 
@@ -1143,6 +1148,138 @@ export async function routeApiRequest(request, env, url) {
         .run();
 
       return jsonResponse({ success: true, deletedId: expenseId });
+    }
+  }
+
+  // --- Money Transfers ---
+  if (pathname === '/api/transfers' && method === 'GET') {
+    const clauses = ['user_id = ?'];
+    const params = [userId];
+
+    const search = cleanString(searchParams.get('search'), 120);
+    if (search) {
+      const like = `%${search}%`;
+      clauses.push(`(from_account LIKE ? OR to_account LIKE ? OR payment_mode LIKE ? OR notes LIKE ?)`);
+      params.push(like, like, like, like);
+    }
+
+    const startDate = cleanString(searchParams.get('start_date'), 20);
+    if (startDate) {
+      clauses.push('transfer_date >= ?');
+      params.push(startDate);
+    }
+
+    const endDate = cleanString(searchParams.get('end_date'), 20);
+    if (endDate) {
+      clauses.push('transfer_date <= ?');
+      params.push(endDate);
+    }
+
+    const res = await env.DB.prepare(
+      `SELECT * FROM money_transfers WHERE ${clauses.join(' AND ')} ORDER BY transfer_date DESC, created_at DESC`
+    )
+      .bind(...params)
+      .all();
+
+    return jsonResponse({ success: true, transfers: res.results || [] });
+  }
+
+  if (pathname === '/api/transfers' && method === 'POST') {
+    const body = await request.json();
+    const data = validateTransferPayload(body);
+    const transferId = crypto.randomUUID();
+    const nowIso = new Date().toISOString();
+
+    await env.DB.prepare(
+      `INSERT INTO money_transfers (
+         id, user_id, transfer_date, from_account, to_account, amount,
+         payment_mode, notes, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        transferId,
+        userId,
+        data.transfer_date,
+        data.from_account,
+        data.to_account,
+        data.amount,
+        data.payment_mode,
+        data.notes,
+        nowIso,
+        nowIso
+      )
+      .run();
+
+    const created = await env.DB.prepare(
+      `SELECT * FROM money_transfers WHERE id = ? AND user_id = ?`
+    )
+      .bind(transferId, userId)
+      .first();
+
+    return jsonResponse({ success: true, transfer: created }, 201);
+  }
+
+  const transferMatch = pathname.match(/^\/api\/transfers\/([^/]+)$/);
+  if (transferMatch) {
+    const transferId = decodeURIComponent(transferMatch[1]);
+
+    if (method === 'PUT') {
+      const existing = await env.DB.prepare(
+        `SELECT * FROM money_transfers WHERE id = ? AND user_id = ?`
+      )
+        .bind(transferId, userId)
+        .first();
+      if (!existing) {
+        throw new ValidationError('Transfer record not found.', 404);
+      }
+
+      const body = await request.json();
+      const data = validateTransferPayload(body);
+      const nowIso = new Date().toISOString();
+
+      await env.DB.prepare(
+        `UPDATE money_transfers
+         SET transfer_date = ?, from_account = ?, to_account = ?, amount = ?,
+             payment_mode = ?, notes = ?, updated_at = ?
+         WHERE id = ? AND user_id = ?`
+      )
+        .bind(
+          data.transfer_date,
+          data.from_account,
+          data.to_account,
+          data.amount,
+          data.payment_mode,
+          data.notes,
+          nowIso,
+          transferId,
+          userId
+        )
+        .run();
+
+      const updated = await env.DB.prepare(
+        `SELECT * FROM money_transfers WHERE id = ? AND user_id = ?`
+      )
+        .bind(transferId, userId)
+        .first();
+
+      return jsonResponse({ success: true, transfer: updated });
+    }
+
+    if (method === 'DELETE') {
+      const existing = await env.DB.prepare(
+        `SELECT id FROM money_transfers WHERE id = ? AND user_id = ?`
+      )
+        .bind(transferId, userId)
+        .first();
+      if (!existing) {
+        throw new ValidationError('Transfer record not found.', 404);
+      }
+
+      await env.DB.prepare(`DELETE FROM money_transfers WHERE id = ? AND user_id = ?`)
+        .bind(transferId, userId)
+        .run();
+
+      return jsonResponse({ success: true, deletedId: transferId });
     }
   }
 

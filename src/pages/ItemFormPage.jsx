@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  Camera,
   ChevronDown,
   ChevronUp,
   Layers,
@@ -8,6 +9,7 @@ import {
   Upload,
   X
 } from 'lucide-react';
+import Modal from '../components/Modal.jsx';
 import {
   calculateMarginPercent,
   DRESS_ALPHA_SIZES,
@@ -53,7 +55,10 @@ export default function ItemFormPage({
   onSyncStateChange
 }) {
   const isEdit = mode === 'edit' && Boolean(itemId);
-  const fileInputRef = useRef(null);
+  const galleryInputRef = useRef(null);
+  const cameraCaptureInputRef = useRef(null);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
 
   const [form, setForm] = useState({
     sku: '',
@@ -64,10 +69,8 @@ export default function ItemFormPage({
     selling_price: '',
     purchase_date: todayISO(),
     status: 'In Stock',
-    // Series mode (e.g., SKU 52 -> 52-1, 52-2, 52-3, 52-4)
     enableSeries: false,
-    seriesCount: 4,
-    // Advanced Options
+    seriesCountInput: '4',
     item_name: '',
     sub_type: '',
     color: '',
@@ -79,7 +82,10 @@ export default function ItemFormPage({
     notes: ''
   });
 
-  const [advancedOpen, setAdvancedOpen] = useState(true);
+  // Tracks which generated series SKUs are checked (defaults to all selected)
+  const [selectedSeriesSkus, setSelectedSeriesSkus] = useState([]);
+
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [photos, setPhotos] = useState([]);
   const [thumbnails, setThumbnails] = useState([]);
   const [compressing, setCompressing] = useState(false);
@@ -87,9 +93,54 @@ export default function ItemFormPage({
   const [loadingExisting, setLoadingExisting] = useState(isEdit);
   const [error, setError] = useState('');
 
+  const [webcamOpen, setWebcamOpen] = useState(false);
+  const [webcamError, setWebcamError] = useState('');
+
   const currency = user?.currency_symbol || '₹';
 
-  // Auto-open extra dress fields when Dresses is selected
+  const parsedSeriesCount = useMemo(() => {
+    const num = parseInt(form.seriesCountInput, 10);
+    if (Number.isNaN(num)) return 2;
+    return Math.max(2, Math.min(40, num));
+  }, [form.seriesCountInput]);
+
+  const allSeriesSkus = useMemo(() => {
+    if (!form.enableSeries || isEdit) return [];
+    return generateSeriesSkus(form.sku, parsedSeriesCount);
+  }, [form.enableSeries, isEdit, form.sku, parsedSeriesCount]);
+
+  // Keep selectedSeriesSkus in sync whenever the generated series list changes
+  useEffect(() => {
+    if (!form.enableSeries || isEdit) {
+      setSelectedSeriesSkus([]);
+      return;
+    }
+    setSelectedSeriesSkus(allSeriesSkus);
+  }, [allSeriesSkus, form.enableSeries, isEdit]);
+
+  const activeSeriesSkus = useMemo(() => {
+    if (!form.enableSeries || isEdit) return [];
+    const checkedSet = new Set(selectedSeriesSkus);
+    return allSeriesSkus.filter((sku) => checkedSet.has(sku));
+  }, [form.enableSeries, isEdit, allSeriesSkus, selectedSeriesSkus]);
+
+  const toggleSeriesSku = (sku) => {
+    setSelectedSeriesSkus((prev) =>
+      prev.includes(sku) ? prev.filter((item) => item !== sku) : [...prev, sku]
+    );
+  };
+
+  const stopWebcamStream = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => stopWebcamStream();
+  }, []);
+
   useEffect(() => {
     if (form.clothingCategory === 'Dresses') {
       setAdvancedOpen(true);
@@ -115,7 +166,7 @@ export default function ItemFormPage({
             purchase_date: item.purchase_date || todayISO(),
             status: item.status || 'In Stock',
             enableSeries: false,
-            seriesCount: 1,
+            seriesCountInput: '4',
             item_name: item.item_name || '',
             sub_type: item.sub_type || '',
             color: item.color || '',
@@ -157,7 +208,7 @@ export default function ItemFormPage({
         purchase_date: todayISO(),
         status: 'In Stock',
         enableSeries: false,
-        seriesCount: 1,
+        seriesCountInput: '4',
         item_name: initialDraft.item_name || '',
         sub_type: initialDraft.sub_type || '',
         color: initialDraft.color || '',
@@ -196,7 +247,7 @@ export default function ItemFormPage({
     }));
   };
 
-  const handlePhotoFiles = async (fileList) => {
+  const addCompressedFiles = async (fileList) => {
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
 
@@ -225,19 +276,81 @@ export default function ItemFormPage({
       setError(err.message || 'Failed to compress selected image.');
     } finally {
       setCompressing(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      if (galleryInputRef.current) galleryInputRef.current.value = '';
+      if (cameraCaptureInputRef.current) cameraCaptureInputRef.current.value = '';
     }
+  };
+
+  const openCameraCapture = async () => {
+    setError('');
+    if (photos.length >= 3) {
+      setError('Maximum of 3 compressed photos allowed per item.');
+      return;
+    }
+
+    const isMobileTouch =
+      typeof navigator !== 'undefined' &&
+      (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1);
+
+    if (isMobileTouch && cameraCaptureInputRef.current) {
+      cameraCaptureInputRef.current.click();
+      return;
+    }
+
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      setWebcamError('');
+      setWebcamOpen(true);
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false
+        });
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play().catch(() => {});
+        }
+      } catch {
+        stopWebcamStream();
+        setWebcamError(
+          'Camera permission denied or no webcam detected. You can still pick a photo from your device.'
+        );
+      }
+    } else if (cameraCaptureInputRef.current) {
+      cameraCaptureInputRef.current.click();
+    }
+  };
+
+  const captureWebcamFrame = async () => {
+    if (!videoRef.current) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = videoRef.current.videoWidth || 1280;
+    canvas.height = videoRef.current.videoHeight || 720;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob(
+      async (blob) => {
+        stopWebcamStream();
+        setWebcamOpen(false);
+        if (!blob) return;
+        const file = new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' });
+        await addCompressedFiles([file]);
+      },
+      'image/jpeg',
+      0.88
+    );
+  };
+
+  const closeWebcamModal = () => {
+    stopWebcamStream();
+    setWebcamOpen(false);
   };
 
   const removePhoto = (index) => {
     setPhotos((prev) => prev.filter((_, i) => i !== index));
     setThumbnails((prev) => prev.filter((_, i) => i !== index));
   };
-
-  const seriesSkus = useMemo(() => {
-    if (!form.enableSeries || isEdit) return [];
-    return generateSeriesSkus(form.sku, form.seriesCount);
-  }, [form.enableSeries, isEdit, form.sku, form.seriesCount]);
 
   const unitCost = Number(form.purchase_cost) || 0;
   const unitPrice = Number(form.selling_price) || 0;
@@ -254,6 +367,12 @@ export default function ItemFormPage({
       return;
     }
 
+    if (!isEdit && form.enableSeries && activeSeriesSkus.length === 0) {
+      setError('Please select at least one series piece checkbox to add to inventory.');
+      setAdvancedOpen(true);
+      return;
+    }
+
     setSaving(true);
     try {
       const resolvedName =
@@ -264,15 +383,14 @@ export default function ItemFormPage({
           .trim() ||
         cleanSku;
 
-      // Multi-piece series creation (e.g., SKU "52" with 4 pieces -> 52-1, 52-2, 52-3, 52-4)
-      if (!isEdit && form.enableSeries && seriesSkus.length > 1) {
+      if (!isEdit && form.enableSeries && activeSeriesSkus.length > 0) {
         let queuedCount = 0;
-        for (let idx = 0; idx < seriesSkus.length; idx += 1) {
-          const pieceSku = seriesSkus[idx];
+        for (let idx = 0; idx < activeSeriesSkus.length; idx += 1) {
+          const pieceSku = activeSeriesSkus[idx];
           const res = await saveInventoryItemOfflineAware(user.id, {
             sku: pieceSku,
             series_code: cleanSku,
-            item_name: `${resolvedName} (${idx + 1}/${seriesSkus.length})`,
+            item_name: `${resolvedName} (${pieceSku})`,
             type: form.type,
             sub_type: form.sub_type.trim(),
             color: form.color.trim(),
@@ -295,8 +413,8 @@ export default function ItemFormPage({
         onSyncStateChange();
         onToast(
           queuedCount > 0
-            ? `Saved ${seriesSkus.length} series items (${seriesSkus[0]}..${seriesSkus[seriesSkus.length - 1]}) offline.`
-            : `Created ${seriesSkus.length} series items (${seriesSkus[0]}..${seriesSkus[seriesSkus.length - 1]}).`,
+            ? `Saved ${activeSeriesSkus.length} selected series item(s) offline.`
+            : `Created ${activeSeriesSkus.length} selected series item(s) (${activeSeriesSkus.join(', ')}).`,
           'success'
         );
         navigate('/inventory');
@@ -305,7 +423,7 @@ export default function ItemFormPage({
 
       const payload = {
         sku: cleanSku,
-        series_code: form.enableSeries ? cleanSku : '',
+        series_code: '',
         item_name: resolvedName,
         type: form.type,
         sub_type: form.sub_type.trim(),
@@ -325,10 +443,7 @@ export default function ItemFormPage({
       };
 
       if (isEdit) {
-        await apiRequest(`/api/inventory/${encodeURIComponent(itemId)}`, {
-          method: 'PUT',
-          body: payload
-        });
+        await saveInventoryItemOfflineAware(user.id, payload, { editId: itemId });
         onToast('Inventory item updated.', 'success');
       } else {
         const res = await saveInventoryItemOfflineAware(user.id, payload);
@@ -373,13 +488,17 @@ export default function ItemFormPage({
         </button>
       </div>
 
-      <form className="card" onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <form
+        className="card"
+        onSubmit={handleSubmit}
+        style={{ display: 'flex', flexDirection: 'column', gap: 18 }}
+      >
         <div>
           <h2 className="card-title" style={{ fontSize: 19 }}>
             {isEdit ? 'Edit Boutique Item' : 'Add New Boutique Item'}
           </h2>
           <p className="card-subtitle">
-            Enter your custom SKU, select Sarees, Dresses, or Others, and optionally generate numbered series pieces.
+            Enter your custom SKU, select Sarees, Dresses, or Others, and optionally choose specific series pieces in stock.
           </p>
         </div>
 
@@ -389,7 +508,7 @@ export default function ItemFormPage({
           </div>
         )}
 
-        {/* Core Required Fields: SKU, Clothing Type, Quantity, Status, Purchase Date */}
+        {/* SKU & Clothing Type */}
         <div className="form-grid-2">
           <div className="field">
             <label className="field-label" htmlFor="item-sku">
@@ -425,7 +544,7 @@ export default function ItemFormPage({
           </div>
         </div>
 
-        {/* Multi-Piece Series Toggle (e.g., 52 -> 52-1, 52-2, 52-3, 52-4) */}
+        {/* Multi-Piece Series Toggle & Free Backspace Count Input */}
         {!isEdit && (
           <div className="collapsible-panel">
             <label
@@ -441,7 +560,7 @@ export default function ItemFormPage({
             >
               <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Layers size={16} color="var(--accent)" />
-                <span>Numbered Piece Series (e.g., SKU 52 → 52-1, 52-2, 52-3, 52-4)</span>
+                <span>Create Numbered Piece Series (e.g., SKU 52 → 52-1, 52-2, 52-3, 52-4)</span>
               </span>
               <input
                 type="checkbox"
@@ -450,8 +569,7 @@ export default function ItemFormPage({
                   const checked = e.target.checked;
                   setForm((f) => ({
                     ...f,
-                    enableSeries: checked,
-                    quantity: checked ? f.seriesCount : f.quantity
+                    enableSeries: checked
                   }));
                 }}
               />
@@ -467,18 +585,29 @@ export default function ItemFormPage({
                     <input
                       id="series-count"
                       className="input"
-                      type="number"
-                      min="2"
-                      max="40"
-                      value={form.seriesCount}
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      placeholder="e.g. 4"
+                      value={form.seriesCountInput}
                       onChange={(e) => {
-                        const cnt = Math.max(2, Math.min(40, Number(e.target.value) || 2));
-                        setForm((f) => ({ ...f, seriesCount: cnt, quantity: cnt }));
+                        const raw = e.target.value.replace(/[^\d]/g, '');
+                        setForm((f) => ({ ...f, seriesCountInput: raw }));
+                      }}
+                      onBlur={() => {
+                        setForm((f) => ({
+                          ...f,
+                          seriesCountInput: String(parsedSeriesCount)
+                        }));
                       }}
                     />
+                    <span className="field-hint">
+                      All {activeSeriesSkus.length} checked piece(s) will be created. Uncheck any sold-out pieces inside Advanced Options.
+                    </span>
                   </div>
+
                   <div className="field">
-                    <span className="field-label">Generated SKUs Preview</span>
+                    <span className="field-label">Selected Pieces ({activeSeriesSkus.length})</span>
                     <div
                       style={{
                         padding: '9px 12px',
@@ -487,13 +616,15 @@ export default function ItemFormPage({
                         border: '1px solid var(--border-subtle)',
                         fontSize: 12.5,
                         fontFamily: 'var(--font-mono)',
-                        color: 'var(--accent)'
+                        color: 'var(--accent)',
+                        minHeight: 40,
+                        display: 'flex',
+                        alignItems: 'center'
                       }}
                     >
-                      {seriesSkus.length > 0
-                        ? seriesSkus.slice(0, 6).join(', ') +
-                          (seriesSkus.length > 6 ? ` ... (${seriesSkus.length} items)` : '')
-                        : 'Enter SKU above first'}
+                      {activeSeriesSkus.length > 0
+                        ? activeSeriesSkus.join(', ')
+                        : 'No pieces selected'}
                     </div>
                   </div>
                 </div>
@@ -502,7 +633,7 @@ export default function ItemFormPage({
           </div>
         )}
 
-        {/* Common Pricing, Quantity, Status & Purchase Date */}
+        {/* Pricing, Quantity, Status & Purchase Date */}
         <div className="form-grid-3">
           <div className="field">
             <label className="field-label" htmlFor="item-cost">
@@ -523,7 +654,7 @@ export default function ItemFormPage({
 
           <div className="field">
             <label className="field-label" htmlFor="item-price">
-              Selling Price ({currency}) *
+              Marked Price ({currency}) *
             </label>
             <input
               id="item-price"
@@ -609,18 +740,21 @@ export default function ItemFormPage({
           <span>Margin: {marginPct}%</span>
         </div>
 
-        {/* Collapsible Advanced Options (Item Name, Sub-Type, Color, Fabric, Pattern, Size for Dresses, Supplier) */}
+        {/* Collapsible Advanced Options */}
         <div className="collapsible-panel">
           <button
             type="button"
             className="collapsible-header"
             onClick={() => setAdvancedOpen((o) => !o)}
           >
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 14 }}>
+            <span
+              style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 14 }}
+            >
               <SlidersHorizontal size={16} color="var(--accent)" />
               <span>
                 Advanced Options ({form.clothingCategory} Details
-                {form.clothingCategory === 'Dresses' ? ' + Size Selector' : ''})
+                {form.enableSeries && !isEdit ? ` · ${allSeriesSkus.length} Series Pieces` : ''}
+                {form.clothingCategory === 'Dresses' ? ' · Size Selector' : ''})
               </span>
             </span>
             {advancedOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
@@ -628,6 +762,83 @@ export default function ItemFormPage({
 
           {advancedOpen && (
             <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {/* Series Pieces Checkboxes (Only shown when Series is enabled) */}
+              {!isEdit && form.enableSeries && allSeriesSkus.length > 0 && (
+                <div
+                  style={{
+                    padding: 12,
+                    borderRadius: 12,
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: 8,
+                      flexWrap: 'wrap'
+                    }}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: 700 }}>
+                      Select Series Pieces Currently In Stock
+                    </span>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => setSelectedSeriesSkus(allSeriesSkus)}
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => setSelectedSeriesSkus([])}
+                      >
+                        Uncheck All
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 2 }}>
+                    {allSeriesSkus.map((pieceSku) => {
+                      const checked = selectedSeriesSkus.includes(pieceSku);
+                      return (
+                        <label
+                          key={pieceSku}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            padding: '6px 11px',
+                            borderRadius: 9,
+                            border: `1px solid ${checked ? 'var(--accent)' : 'var(--border-strong)'}`,
+                            background: checked ? 'var(--accent-soft)' : 'var(--bg-subtle)',
+                            color: checked ? 'var(--accent)' : 'var(--text-secondary)',
+                            fontSize: 13,
+                            fontWeight: 700,
+                            fontFamily: 'var(--font-mono)',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleSeriesSku(pieceSku)}
+                          />
+                          <span>{pieceSku}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div className="form-grid-2">
                 <div className="field">
                   <label className="field-label" htmlFor="item-name">
@@ -720,7 +931,6 @@ export default function ItemFormPage({
                 </div>
               </div>
 
-              {/* Dress Size Selector (Alpha S/M/L/XL/XXL OR Numeric 32..46 + Free Size) */}
               {form.clothingCategory === 'Dresses' && (
                 <div className="form-grid-2">
                   <div className="field">
@@ -734,7 +944,9 @@ export default function ItemFormPage({
                       onChange={(e) => handleSizeTypeChange(e.target.value)}
                     >
                       <option value="alpha">Letter Sizes (S, M, L, XL, XXL, Free Size)</option>
-                      <option value="numeric">Numeric Sizes (32, 34, 40, 42, 44, 46, Free Size)</option>
+                      <option value="numeric">
+                        Numeric Sizes (32, 34, 40, 42, 44, 46, Free Size)
+                      </option>
                     </select>
                   </div>
 
@@ -791,39 +1003,55 @@ export default function ItemFormPage({
           )}
         </div>
 
-        {/* Compressed Photo Uploader (Auto-compressed ~60 KB for 5 GB D1 capacity) */}
+        {/* Camera Capture + Gallery Upload */}
         <div className="field">
           <label className="field-label">
-            Photos (Up to 3 · Auto-Compressed ~60 KB for 5 GB Storage)
+            Photos (Up to 3 · Take Camera Photo or Upload · Auto-Compressed ~60 KB)
           </label>
+
           <input
-            ref={fileInputRef}
+            ref={galleryInputRef}
             type="file"
             accept="image/jpeg,image/png,image/webp"
             multiple
             style={{ display: 'none' }}
-            onChange={(e) => handlePhotoFiles(e.target.files)}
+            onChange={(e) => addCompressedFiles(e.target.files)}
           />
 
-          <div
-            className="photo-dropzone"
-            onClick={() => fileInputRef.current?.click()}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                fileInputRef.current?.click();
-              }
-            }}
-          >
-            <Upload size={22} color="var(--accent)" style={{ margin: '0 auto 6px' }} />
-            <div style={{ fontWeight: 600, fontSize: 13.5 }}>
-              {compressing ? 'Compressing photo...' : 'Tap to upload or snap garment photos'}
-            </div>
-            <div className="field-hint">
-              JPEG, PNG, or WebP · Automatically compressed to ~60 KB to maximize 5 GB space
-            </div>
+          <input
+            ref={cameraCaptureInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            style={{ display: 'none' }}
+            onChange={(e) => addCompressedFiles(e.target.files)}
+          />
+
+          <div className="photo-actions-row">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={compressing || photos.length >= 3}
+              onClick={openCameraCapture}
+            >
+              <Camera size={16} />
+              <span>{compressing ? 'Compressing...' : 'Take Photo (Camera)'}</span>
+            </button>
+
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={compressing || photos.length >= 3}
+              onClick={() => galleryInputRef.current?.click()}
+            >
+              <Upload size={16} />
+              <span>Upload from Device</span>
+            </button>
+          </div>
+
+          <div className="field-hint">
+            Uses phone rear camera directly or laptop webcam, and compresses each image to ~60 KB so
+            5 GB D1 holds tens of thousands of photos.
           </div>
 
           {photos.length > 0 && (
@@ -858,12 +1086,36 @@ export default function ItemFormPage({
               ? 'Saving...'
               : isEdit
                 ? 'Save Changes'
-                : form.enableSeries && seriesSkus.length > 1
-                  ? `Create ${seriesSkus.length} Series Items`
+                : form.enableSeries
+                  ? `Create ${activeSeriesSkus.length} Series Item(s)`
                   : 'Save Item'}
           </button>
         </div>
       </form>
+
+      <Modal open={webcamOpen} title="Capture Garment Photo" onClose={closeWebcamModal} maxWidth={480}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {webcamError ? (
+            <div className="alert-banner alert-warning">
+              <span>{webcamError}</span>
+            </div>
+          ) : (
+            <video ref={videoRef} className="camera-video-box" autoPlay playsInline muted />
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button type="button" className="btn btn-secondary" onClick={closeWebcamModal}>
+              Cancel
+            </button>
+            {!webcamError && (
+              <button type="button" className="btn btn-primary" onClick={captureWebcamFrame}>
+                <Camera size={15} />
+                <span>Snap &amp; Compress</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
