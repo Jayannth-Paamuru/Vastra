@@ -10,6 +10,7 @@ import {
   Receipt,
   RefreshCw,
   Settings as SettingsIcon,
+  Wallet,
   Wifi,
   WifiOff
 } from 'lucide-react';
@@ -18,6 +19,7 @@ import DashboardPage from './pages/DashboardPage.jsx';
 import InventoryPage from './pages/InventoryPage.jsx';
 import ItemFormPage from './pages/ItemFormPage.jsx';
 import SalesPage from './pages/SalesPage.jsx';
+import ExpensesPage from './pages/ExpensesPage.jsx';
 import AnalyticsPage from './pages/AnalyticsPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import {
@@ -59,6 +61,7 @@ const NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/inventory', label: 'Inventory', icon: Package },
   { path: '/sales', label: 'Sales Ledger', icon: Receipt },
+  { path: '/expenses', label: 'Expenses', icon: Wallet },
   { path: '/analytics', label: 'Analytics', icon: BarChart3 },
   { path: '/settings', label: 'Settings', icon: SettingsIcon }
 ];
@@ -69,6 +72,7 @@ function getPageTitle(pathname) {
   if (pathname === '/inventory/new') return 'Add New Item';
   if (/^\/inventory\/[^/]+\/edit$/.test(pathname)) return 'Edit Item';
   if (pathname === '/sales') return 'Sales Ledger';
+  if (pathname === '/expenses') return 'Expenses & Returns';
   if (pathname === '/analytics') return 'Analytics';
   if (pathname === '/settings') return 'Settings';
   return 'VastraLedger';
@@ -375,6 +379,8 @@ export default function App() {
     );
   } else if (path === '/sales') {
     pageElement = <SalesPage user={user} onToast={addToast} refreshKey={refreshKey} />;
+  } else if (path === '/expenses') {
+    pageElement = <ExpensesPage user={user} onToast={addToast} refreshKey={refreshKey} />;
   } else if (path === '/analytics') {
     pageElement = <AnalyticsPage user={user} refreshKey={refreshKey} />;
   } else if (path === '/settings') {
@@ -595,12 +601,13 @@ export default function App() {
       </div>
 
       <nav className="bottom-nav" aria-label="Mobile navigation">
-        {NAV_ITEMS.map((item) => {
+        {NAV_ITEMS.filter((i) => i.path !== '/settings').map((item) => {
           const Icon = item.icon;
           const active =
             item.path === '/'
               ? path === '/'
-              : path === item.path || (item.path === '/inventory' && path.startsWith('/inventory/'));
+              : path === item.path ||
+                (item.path === '/inventory' && path.startsWith('/inventory/'));
           return (
             <button
               key={item.path}
@@ -613,6 +620,14 @@ export default function App() {
             </button>
           );
         })}
+        <button
+          type="button"
+          className={`bottom-nav-btn ${path === '/settings' ? 'active' : ''}`}
+          onClick={() => navigate('/settings')}
+        >
+          <SettingsIcon size={18} />
+          <span>Settings</span>
+        </button>
       </nav>
 
       {toasts.length > 0 && (

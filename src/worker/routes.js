@@ -25,8 +25,10 @@ import {
 import {
   cleanString,
   parseIsoDate,
+  validateExpensePayload,
   validateInstallmentPayload,
   validateInventoryPayload,
+  validateReturnPayload,
   validateSalePayload,
   ValidationError
 } from './validation.js';
@@ -108,7 +110,9 @@ export async function routeApiRequest(request, env, url) {
     pathname === '/api/inventory' ||
     /^\/api\/inventory\/[^/]+(\/sell)?$/.test(pathname) ||
     pathname === '/api/sales' ||
-    /^\/api\/sales\/[^/]+(\/installments)?$/.test(pathname) ||
+    /^\/api\/sales\/[^/]+(\/installments|\/return)?$/.test(pathname) ||
+    pathname === '/api/expenses' ||
+    /^\/api\/expenses\/[^/]+$/.test(pathname) ||
     pathname === '/api/dashboard' ||
     pathname === '/api/analytics' ||
     pathname === '/api/export';
@@ -305,7 +309,7 @@ export async function routeApiRequest(request, env, url) {
       env.DB.prepare(sql).bind(...params).all(),
       env.DB.prepare(
         `SELECT item_id, sku, sale_date, customer_name, customer_phone, selling_price,
-                quantity_sold, payment_mode, amount_paid, balance_due, payment_status
+                quantity_sold, payment_mode, amount_paid, balance_due, payment_status, sale_status
          FROM sales
          WHERE user_id = ?
          ORDER BY sale_date DESC, created_at DESC`
@@ -343,7 +347,8 @@ export async function routeApiRequest(request, env, url) {
               selling_price: Number(matchedSale.selling_price ?? item.selling_price),
               quantity_sold: Number(matchedSale.quantity_sold ?? 1),
               payment_mode: matchedSale.payment_mode || '',
-              balance_due: Number(matchedSale.balance_due ?? 0)
+              balance_due: Number(matchedSale.balance_due ?? 0),
+              sale_status: matchedSale.sale_status || 'Completed'
             }
           : isSoldOut
             ? {
@@ -353,7 +358,8 @@ export async function routeApiRequest(request, env, url) {
                 selling_price: Number(item.selling_price),
                 quantity_sold: 1,
                 payment_mode: '',
-                balance_due: 0
+                balance_due: 0,
+                sale_status: 'Completed'
               }
             : null
       };
@@ -471,8 +477,9 @@ export async function routeApiRequest(request, env, url) {
          quantity_sold, purchase_cost, selling_price, profit, sale_date,
          customer_name, customer_phone, payment_mode,
          amount_paid, balance_due, payment_status, next_due_date,
+         sale_status, returned_qty, refund_amount, returned_at, return_reason,
          notes, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         saleId,
@@ -495,6 +502,11 @@ export async function routeApiRequest(request, env, url) {
         saleInput.balance_due,
         saleInput.payment_status,
         saleInput.next_due_date,
+        'Completed',
+        0,
+        0,
+        null,
+        '',
         saleInput.notes,
         nowIso
       )
@@ -532,7 +544,8 @@ export async function routeApiRequest(request, env, url) {
       selling_price: Number(createdSale.selling_price),
       quantity_sold: Number(createdSale.quantity_sold),
       payment_mode: createdSale.payment_mode || '',
-      balance_due: Number(createdSale.balance_due || 0)
+      balance_due: Number(createdSale.balance_due || 0),
+      sale_status: createdSale.sale_status || 'Completed'
     };
 
     return jsonResponse(
@@ -677,6 +690,122 @@ export async function routeApiRequest(request, env, url) {
     }
   }
 
+  // --- Return Sold Item (Restores Stock + Adjusts Sale + Optional Refund Expense) ---
+  const returnMatch = pathname.match(/^\/api\/sales\/([^/]+)\/return$/);
+  if (returnMatch && method === 'POST') {
+    const saleId = decodeURIComponent(returnMatch[1]);
+    const sale = await env.DB.prepare(`SELECT * FROM sales WHERE id = ? AND user_id = ?`)
+      .bind(saleId, userId)
+      .first();
+
+    if (!sale) {
+      throw new ValidationError('Sale record not found.', 404);
+    }
+
+    const body = await request.json();
+    const retInput = validateReturnPayload(body, sale);
+    const nowIso = new Date().toISOString();
+
+    const prevReturnedQty = Number(sale.returned_qty) || 0;
+    const nextReturnedQty = prevReturnedQty + retInput.return_qty;
+    const totalSoldQty = Number(sale.quantity_sold) || 1;
+    const remainingActiveQty = Math.max(0, totalSoldQty - nextReturnedQty);
+    const nextSaleStatus =
+      remainingActiveQty === 0 ? 'Returned' : 'Partially Returned';
+
+    const prevRefund = Number(sale.refund_amount) || 0;
+    const nextRefund = Number((prevRefund + retInput.refund_amount).toFixed(2));
+
+    const nextProfit = Number(
+      ((Number(sale.selling_price) - Number(sale.purchase_cost)) * remainingActiveQty).toFixed(2)
+    );
+
+    const nextAmountPaid = Number(
+      Math.max(0, Number(sale.amount_paid ?? Number(sale.selling_price) * totalSoldQty) - retInput.refund_amount).toFixed(2)
+    );
+    const nextBalanceDue = Number(
+      Math.max(0, Number(sale.selling_price) * remainingActiveQty - nextAmountPaid).toFixed(2)
+    );
+    const nextPaymentStatus =
+      nextBalanceDue <= 0 ? 'Paid' : nextAmountPaid > 0 ? 'Partial' : 'Pending';
+
+    await env.DB.prepare(
+      `UPDATE sales
+       SET sale_status = ?, returned_qty = ?, refund_amount = ?, returned_at = ?, return_reason = ?,
+           profit = ?, amount_paid = ?, balance_due = ?, payment_status = ?
+       WHERE id = ? AND user_id = ?`
+    )
+      .bind(
+        nextSaleStatus,
+        nextReturnedQty,
+        nextRefund,
+        retInput.return_date,
+        retInput.reason || sale.return_reason || '',
+        nextProfit,
+        nextAmountPaid,
+        nextBalanceDue,
+        nextPaymentStatus,
+        saleId,
+        userId
+      )
+      .run();
+
+    // Restore stock back into inventory
+    if (sale.item_id) {
+      const inv = await env.DB.prepare(`SELECT * FROM inventory WHERE id = ? AND user_id = ?`)
+        .bind(sale.item_id, userId)
+        .first();
+      if (inv) {
+        const restoredQty = Number(inv.quantity) + retInput.return_qty;
+        const restoredStatus = restoredQty > 0 && inv.status === 'Sold' ? 'In Stock' : inv.status;
+        await env.DB.prepare(
+          `UPDATE inventory
+           SET quantity = ?, status = ?, updated_at = ?
+           WHERE id = ? AND user_id = ?`
+        )
+          .bind(restoredQty, restoredStatus, nowIso, inv.id, userId)
+          .run();
+      }
+    }
+
+    // Optionally log refund payout in manual expenses
+    let createdExpense = null;
+    if (retInput.log_expense && retInput.refund_amount > 0) {
+      const expId = crypto.randomUUID();
+      await env.DB.prepare(
+        `INSERT INTO expenses (
+           id, user_id, expense_date, category, title, amount, payment_mode,
+           vendor_name, related_sku, notes, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+        .bind(
+          expId,
+          userId,
+          retInput.return_date,
+          'Customer Return Refund',
+          `Return Refund — ${sale.item_name} (${retInput.return_qty} pc)`,
+          retInput.refund_amount,
+          retInput.payment_mode,
+          sale.customer_name || 'Walk-in Customer',
+          sale.sku,
+          retInput.reason || 'Customer returned item',
+          nowIso,
+          nowIso
+        )
+        .run();
+
+      createdExpense = await env.DB.prepare(`SELECT * FROM expenses WHERE id = ? AND user_id = ?`)
+        .bind(expId, userId)
+        .first();
+    }
+
+    const updatedSale = await env.DB.prepare(`SELECT * FROM sales WHERE id = ? AND user_id = ?`)
+      .bind(saleId, userId)
+      .first();
+
+    return jsonResponse({ success: true, sale: updatedSale, expense: createdExpense }, 201);
+  }
+
   // --- EMI Installments on a Sale ---
   const installmentMatch = pathname.match(/^\/api\/sales\/([^/]+)\/installments$/);
   if (installmentMatch && method === 'POST') {
@@ -689,7 +818,11 @@ export async function routeApiRequest(request, env, url) {
       throw new ValidationError('Sale record not found.', 404);
     }
 
-    const totalSaleValue = Number((Number(sale.selling_price) * Number(sale.quantity_sold)).toFixed(2));
+    const activeQty = Math.max(
+      0,
+      (Number(sale.quantity_sold) || 1) - (Number(sale.returned_qty) || 0)
+    );
+    const totalSaleValue = Number((Number(sale.selling_price) * activeQty).toFixed(2));
     const currentPaid = Number(sale.amount_paid ?? totalSaleValue);
     const currentDue =
       sale.balance_due !== null && sale.balance_due !== undefined
@@ -856,7 +989,11 @@ export async function routeApiRequest(request, env, url) {
           .bind(existing.item_id, userId)
           .first();
         if (inv) {
-          const restoredQty = Number(inv.quantity) + Number(existing.quantity_sold);
+          const activeSold = Math.max(
+            0,
+            (Number(existing.quantity_sold) || 1) - (Number(existing.returned_qty) || 0)
+          );
+          const restoredQty = Number(inv.quantity) + activeSold;
           const restoredStatus = inv.status === 'Sold' ? 'In Stock' : inv.status;
           await env.DB.prepare(
             `UPDATE inventory SET quantity = ?, status = ?, selling_date = NULL, updated_at = ?
@@ -872,6 +1009,140 @@ export async function routeApiRequest(request, env, url) {
         .run();
 
       return jsonResponse({ success: true, deletedId: saleId, restoredStock: restoreStock });
+    }
+  }
+
+  // --- Manual Boutique Expenses ---
+  if (pathname === '/api/expenses' && method === 'GET') {
+    const clauses = ['user_id = ?'];
+    const params = [userId];
+
+    const search = cleanString(searchParams.get('search'), 120);
+    if (search) {
+      const like = `%${search}%`;
+      clauses.push(`(title LIKE ? OR category LIKE ? OR vendor_name LIKE ? OR related_sku LIKE ? OR notes LIKE ?)`);
+      params.push(like, like, like, like, like);
+    }
+
+    const category = cleanString(searchParams.get('category'), 80);
+    if (category && category !== 'All') {
+      clauses.push('category = ?');
+      params.push(category);
+    }
+
+    const startDate = cleanString(searchParams.get('start_date'), 20);
+    if (startDate) {
+      clauses.push('expense_date >= ?');
+      params.push(startDate);
+    }
+
+    const endDate = cleanString(searchParams.get('end_date'), 20);
+    if (endDate) {
+      clauses.push('expense_date <= ?');
+      params.push(endDate);
+    }
+
+    const res = await env.DB.prepare(
+      `SELECT * FROM expenses WHERE ${clauses.join(' AND ')} ORDER BY expense_date DESC, created_at DESC`
+    )
+      .bind(...params)
+      .all();
+
+    return jsonResponse({ success: true, expenses: res.results || [] });
+  }
+
+  if (pathname === '/api/expenses' && method === 'POST') {
+    const body = await request.json();
+    const data = validateExpensePayload(body);
+    const expId = crypto.randomUUID();
+    const nowIso = new Date().toISOString();
+
+    await env.DB.prepare(
+      `INSERT INTO expenses (
+         id, user_id, expense_date, category, title, amount, payment_mode,
+         vendor_name, related_sku, notes, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        expId,
+        userId,
+        data.expense_date,
+        data.category,
+        data.title,
+        data.amount,
+        data.payment_mode,
+        data.vendor_name,
+        data.related_sku,
+        data.notes,
+        nowIso,
+        nowIso
+      )
+      .run();
+
+    const created = await env.DB.prepare(`SELECT * FROM expenses WHERE id = ? AND user_id = ?`)
+      .bind(expId, userId)
+      .first();
+
+    return jsonResponse({ success: true, expense: created }, 201);
+  }
+
+  const expenseMatch = pathname.match(/^\/api\/expenses\/([^/]+)$/);
+  if (expenseMatch) {
+    const expenseId = decodeURIComponent(expenseMatch[1]);
+
+    if (method === 'PUT') {
+      const existing = await env.DB.prepare(`SELECT * FROM expenses WHERE id = ? AND user_id = ?`)
+        .bind(expenseId, userId)
+        .first();
+      if (!existing) {
+        throw new ValidationError('Expense entry not found.', 404);
+      }
+
+      const body = await request.json();
+      const data = validateExpensePayload(body);
+      const nowIso = new Date().toISOString();
+
+      await env.DB.prepare(
+        `UPDATE expenses
+         SET expense_date = ?, category = ?, title = ?, amount = ?, payment_mode = ?,
+             vendor_name = ?, related_sku = ?, notes = ?, updated_at = ?
+         WHERE id = ? AND user_id = ?`
+      )
+        .bind(
+          data.expense_date,
+          data.category,
+          data.title,
+          data.amount,
+          data.payment_mode,
+          data.vendor_name,
+          data.related_sku,
+          data.notes,
+          nowIso,
+          expenseId,
+          userId
+        )
+        .run();
+
+      const updated = await env.DB.prepare(`SELECT * FROM expenses WHERE id = ? AND user_id = ?`)
+        .bind(expenseId, userId)
+        .first();
+
+      return jsonResponse({ success: true, expense: updated });
+    }
+
+    if (method === 'DELETE') {
+      const existing = await env.DB.prepare(`SELECT id FROM expenses WHERE id = ? AND user_id = ?`)
+        .bind(expenseId, userId)
+        .first();
+      if (!existing) {
+        throw new ValidationError('Expense entry not found.', 404);
+      }
+
+      await env.DB.prepare(`DELETE FROM expenses WHERE id = ? AND user_id = ?`)
+        .bind(expenseId, userId)
+        .run();
+
+      return jsonResponse({ success: true, deletedId: expenseId });
     }
   }
 
@@ -931,6 +1202,22 @@ export async function routeApiRequest(request, env, url) {
       return true;
     });
 
+    const allExpensesRes = await env.DB.prepare(
+      `SELECT * FROM expenses WHERE user_id = ? ORDER BY expense_date DESC, created_at DESC`
+    )
+      .bind(userId)
+      .all();
+    const periodExpenses = (allExpensesRes.results || []).filter((e) => {
+      if (start && e.expense_date < start) return false;
+      if (end && e.expense_date > end) return false;
+      if (slicerPayment && slicerPayment !== 'All' && e.payment_mode !== slicerPayment) return false;
+      return true;
+    });
+
+    const totalExpenses = Number(
+      periodExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0).toFixed(2)
+    );
+
     const inStockItems = filteredInventory.filter(
       (i) => i.status === 'In Stock' && Number(i.quantity) > 0
     );
@@ -944,12 +1231,24 @@ export async function routeApiRequest(request, env, url) {
 
     const totalRevenue = Number(
       periodSales
-        .reduce((sum, s) => sum + Number(s.selling_price) * Number(s.quantity_sold), 0)
+        .reduce((sum, s) => {
+          const activeQty = Math.max(
+            0,
+            (Number(s.quantity_sold) || 1) - (Number(s.returned_qty) || 0)
+          );
+          return sum + Number(s.selling_price) * activeQty;
+        }, 0)
         .toFixed(2)
     );
     const totalCogs = Number(
       periodSales
-        .reduce((sum, s) => sum + Number(s.purchase_cost) * Number(s.quantity_sold), 0)
+        .reduce((sum, s) => {
+          const activeQty = Math.max(
+            0,
+            (Number(s.quantity_sold) || 1) - (Number(s.returned_qty) || 0)
+          );
+          return sum + Number(s.purchase_cost) * activeQty;
+        }, 0)
         .toFixed(2)
     );
     const totalProfit = Number(
@@ -961,7 +1260,11 @@ export async function routeApiRequest(request, env, url) {
     const totalEmiReceivable = Number(
       allSales
         .reduce((sum, s) => {
-          const billed = Number(s.selling_price) * Number(s.quantity_sold);
+          const activeQty = Math.max(
+            0,
+            (Number(s.quantity_sold) || 1) - (Number(s.returned_qty) || 0)
+          );
+          const billed = Number(s.selling_price) * activeQty;
           const paid = Number(s.amount_paid ?? billed);
           const due =
             s.balance_due !== null && s.balance_due !== undefined
@@ -971,15 +1274,6 @@ export async function routeApiRequest(request, env, url) {
         }, 0)
         .toFixed(2)
     );
-    const activeEmiCount = allSales.filter((s) => {
-      const billed = Number(s.selling_price) * Number(s.quantity_sold);
-      const paid = Number(s.amount_paid ?? billed);
-      const due =
-        s.balance_due !== null && s.balance_due !== undefined
-          ? Number(s.balance_due)
-          : Math.max(0, billed - paid);
-      return due > 0;
-    }).length;
 
     const buildDailySeries = (days) => {
       const map = new Map();
@@ -990,11 +1284,15 @@ export async function routeApiRequest(request, env, url) {
       for (const s of periodSales) {
         const entry = map.get(s.sale_date);
         if (entry) {
+          const activeQty = Math.max(
+            0,
+            (Number(s.quantity_sold) || 1) - (Number(s.returned_qty) || 0)
+          );
           entry.revenue = Number(
-            (entry.revenue + Number(s.selling_price) * Number(s.quantity_sold)).toFixed(2)
+            (entry.revenue + Number(s.selling_price) * activeQty).toFixed(2)
           );
           entry.profit = Number((entry.profit + Number(s.profit)).toFixed(2));
-          entry.units += Number(s.quantity_sold);
+          entry.units += activeQty;
         }
       }
       return Array.from(map.values());
@@ -1011,7 +1309,11 @@ export async function routeApiRequest(request, env, url) {
 
     const payMap = new Map();
     for (const s of periodSales) {
-      const rev = Number(s.selling_price) * Number(s.quantity_sold);
+      const activeQty = Math.max(
+        0,
+        (Number(s.quantity_sold) || 1) - (Number(s.returned_qty) || 0)
+      );
+      const rev = Number(s.selling_price) * activeQty;
       const cur = payMap.get(s.payment_mode) || { label: s.payment_mode, value: 0, count: 0 };
       cur.value = Number((cur.value + rev).toFixed(2));
       cur.count += 1;
@@ -1034,11 +1336,15 @@ export async function routeApiRequest(request, env, url) {
         totalRevenue,
         totalCogs,
         totalProfit,
+        totalExpenses,
         profitMargin,
         salesCount: periodSales.length,
-        unitsSold: periodSales.reduce((sum, s) => sum + Number(s.quantity_sold), 0),
-        totalEmiReceivable,
-        activeEmiCount
+        unitsSold: periodSales.reduce(
+          (sum, s) =>
+            sum + Math.max(0, (Number(s.quantity_sold) || 1) - (Number(s.returned_qty) || 0)),
+          0
+        ),
+        totalEmiReceivable
       },
       charts: {
         revenueProfit7d: buildDailySeries(7),
@@ -1073,8 +1379,12 @@ export async function routeApiRequest(request, env, url) {
     for (const s of sales) {
       const entry = trendMap.get(s.sale_date);
       if (entry) {
+        const activeQty = Math.max(
+          0,
+          (Number(s.quantity_sold) || 1) - (Number(s.returned_qty) || 0)
+        );
         entry.revenue = Number(
-          (entry.revenue + Number(s.selling_price) * Number(s.quantity_sold)).toFixed(2)
+          (entry.revenue + Number(s.selling_price) * activeQty).toFixed(2)
         );
         entry.profit = Number((entry.profit + Number(s.profit)).toFixed(2));
       }
@@ -1095,7 +1405,10 @@ export async function routeApiRequest(request, env, url) {
     };
 
     for (const s of sales) {
-      const qty = Number(s.quantity_sold) || 1;
+      const qty = Math.max(
+        0,
+        (Number(s.quantity_sold) || 1) - (Number(s.returned_qty) || 0)
+      );
       const rev = Number(s.selling_price) * qty;
       const cogs = Number(s.purchase_cost) * qty;
       const profit = Number(s.profit);

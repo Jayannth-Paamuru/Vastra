@@ -1,4 +1,5 @@
 import {
+  EXPENSE_CATEGORIES,
   INSTALLMENT_PAYMENT_MODES,
   INVENTORY_STATUSES,
   PAYMENT_MODES,
@@ -257,6 +258,73 @@ export function validateInstallmentPayload(body, currentBalanceDue) {
     payment_date,
     payment_mode,
     next_due_date,
+    notes
+  };
+}
+
+export function validateReturnPayload(body, sale) {
+  const totalSold = Number(sale.quantity_sold) || 1;
+  const alreadyReturned = Number(sale.returned_qty) || 0;
+  const maxReturnable = Math.max(0, totalSold - alreadyReturned);
+
+  if (maxReturnable <= 0) {
+    throw new ValidationError('All units from this sale have already been returned.');
+  }
+
+  const return_qty = parseNonNegativeInt(body.return_qty ?? 1, 'Return quantity', 1);
+  if (return_qty > maxReturnable) {
+    throw new ValidationError(`Only ${maxReturnable} unit(s) eligible for return on this sale.`);
+  }
+
+  const maxRefund = Number((Number(sale.selling_price) * return_qty).toFixed(2));
+  const refund_amount =
+    body.refund_amount !== undefined && body.refund_amount !== ''
+      ? parseNonNegativeNumber(body.refund_amount, 'Refund amount')
+      : maxRefund;
+
+  if (refund_amount > maxRefund + 0.01) {
+    throw new ValidationError(`Refund amount cannot exceed ${maxRefund}.`);
+  }
+
+  const return_date = parseIsoDate(body.return_date, todayISO());
+  const modeRaw = cleanString(body.payment_mode || sale.payment_mode || 'UPI', 32);
+  const payment_mode = INSTALLMENT_PAYMENT_MODES.includes(modeRaw) ? modeRaw : 'Cash';
+  const reason = cleanString(body.reason, 300);
+  const log_expense = body.log_expense !== false && refund_amount > 0;
+
+  return {
+    return_qty,
+    refund_amount: Number(Math.min(refund_amount, maxRefund).toFixed(2)),
+    return_date,
+    payment_mode,
+    reason,
+    log_expense
+  };
+}
+
+export function validateExpensePayload(body) {
+  const title = cleanString(body.title, 160);
+  const category = cleanString(body.category || 'Miscellaneous', 80);
+  if (!EXPENSE_CATEGORIES.includes(category) && !category) {
+    throw new ValidationError('Please select a valid expense category.');
+  }
+  const resolvedTitle = title || category;
+  const amount = parsePositiveNumber(body.amount, 'Expense amount');
+  const expense_date = parseIsoDate(body.expense_date, todayISO());
+  const modeRaw = cleanString(body.payment_mode || 'UPI', 32);
+  const payment_mode = INSTALLMENT_PAYMENT_MODES.includes(modeRaw) ? modeRaw : 'UPI';
+  const vendor_name = cleanString(body.vendor_name, 120);
+  const related_sku = cleanString(body.related_sku, 64);
+  const notes = cleanString(body.notes, 600);
+
+  return {
+    expense_date,
+    category: category || 'Miscellaneous',
+    title: resolvedTitle,
+    amount,
+    payment_mode,
+    vendor_name,
+    related_sku,
     notes
   };
 }

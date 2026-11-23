@@ -80,12 +80,37 @@ export const PATTERN_PRESETS = [
 ];
 
 export const DRESS_ALPHA_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL', '4XL', '5XL', 'Free Size'];
-export const DRESS_NUMERIC_SIZES = ['30', '32', '34', '36', '38', '40', '42', '44', '46', '48', '50', 'Free Size'];
+export const DRESS_NUMERIC_SIZES = [
+  '30',
+  '32',
+  '34',
+  '36',
+  '38',
+  '40',
+  '42',
+  '44',
+  '46',
+  '48',
+  '50',
+  'Free Size'
+];
 export const SIZE_OPTIONS = [...new Set([...DRESS_ALPHA_SIZES, ...DRESS_NUMERIC_SIZES])];
 
 export const INVENTORY_STATUSES = ['In Stock', 'Reserved', 'Sold'];
 export const PAYMENT_MODES = ['UPI', 'Cash', 'Card', 'Bank Transfer', 'EMI'];
 export const INSTALLMENT_PAYMENT_MODES = ['UPI', 'Cash', 'Card', 'Bank Transfer'];
+
+export const EXPENSE_CATEGORIES = [
+  'Customer Return Refund',
+  'Shop Rent & Maintenance',
+  'Electricity & Utility',
+  'Packaging & Carry Bags',
+  'Tailoring / Fall & Pico',
+  'Shipping & Courier',
+  'Staff & Wages',
+  'Marketing & Promotion',
+  'Miscellaneous'
+];
 
 export const PERIOD_OPTIONS = [
   { value: 'today', label: 'Today' },
@@ -115,6 +140,7 @@ export const SPA_EXACT_ROUTES = new Set([
   '/inventory',
   '/inventory/new',
   '/sales',
+  '/expenses',
   '/analytics',
   '/settings'
 ]);

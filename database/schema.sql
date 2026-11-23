@@ -99,6 +99,11 @@ CREATE TABLE IF NOT EXISTS sales (
   balance_due REAL NOT NULL DEFAULT 0,
   payment_status TEXT NOT NULL DEFAULT 'Paid',
   next_due_date TEXT,
+  sale_status TEXT NOT NULL DEFAULT 'Completed',
+  returned_qty INTEGER NOT NULL DEFAULT 0,
+  refund_amount REAL NOT NULL DEFAULT 0,
+  returned_at TEXT,
+  return_reason TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -118,6 +123,22 @@ CREATE TABLE IF NOT EXISTS sale_installments (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS expenses (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  expense_date TEXT NOT NULL,
+  category TEXT NOT NULL,
+  title TEXT NOT NULL,
+  amount REAL NOT NULL CHECK (amount >= 0),
+  payment_mode TEXT NOT NULL DEFAULT 'UPI',
+  vendor_name TEXT NOT NULL DEFAULT '',
+  related_sku TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_hash, attempted_at);
 CREATE INDEX IF NOT EXISTS idx_login_attempts_ident ON login_attempts(identifier_hash, attempted_at);
@@ -127,5 +148,8 @@ CREATE INDEX IF NOT EXISTS idx_inventory_user_date ON inventory(user_id, purchas
 CREATE INDEX IF NOT EXISTS idx_item_photos_item ON item_photos(item_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_sales_user_date ON sales(user_id, sale_date);
 CREATE INDEX IF NOT EXISTS idx_sales_user_type ON sales(user_id, type);
+CREATE INDEX IF NOT EXISTS idx_sales_user_status ON sales(user_id, sale_status);
 CREATE INDEX IF NOT EXISTS idx_installments_sale ON sale_installments(sale_id, payment_date);
 CREATE INDEX IF NOT EXISTS idx_installments_user ON sale_installments(user_id, payment_date);
+CREATE INDEX IF NOT EXISTS idx_expenses_user_date ON expenses(user_id, expense_date);
+CREATE INDEX IF NOT EXISTS idx_expenses_user_cat ON expenses(user_id, category);

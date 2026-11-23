@@ -6,7 +6,8 @@ import {
   Receipt,
   RotateCcw,
   Search,
-  Trash2
+  Trash2,
+  Undo2
 } from 'lucide-react';
 import Modal from '../components/Modal.jsx';
 import {
@@ -51,6 +52,18 @@ export default function SalesPage({ user, onToast, refreshKey }) {
   });
   const [installmentBusy, setInstallmentBusy] = useState(false);
 
+  // Return item modal
+  const [returnSale, setReturnSale] = useState(null);
+  const [returnForm, setReturnForm] = useState({
+    return_qty: 1,
+    refund_amount: '',
+    return_date: todayISO(),
+    payment_mode: 'UPI',
+    reason: '',
+    log_expense: true
+  });
+  const [returnBusy, setReturnBusy] = useState(false);
+
   // Delete sale modal
   const [deleteSale, setDeleteSale] = useState(null);
   const [restoreStock, setRestoreStock] = useState(true);
@@ -75,14 +88,18 @@ export default function SalesPage({ user, onToast, refreshKey }) {
   }, [user.id, refreshKey]);
 
   const getSaleAmounts = (s) => {
-    const billed = Number((Number(s.selling_price) * Number(s.quantity_sold)).toFixed(2));
+    const soldQty = Number(s.quantity_sold) || 1;
+    const returnedQty = Number(s.returned_qty) || 0;
+    const activeQty = Math.max(0, soldQty - returnedQty);
+    const maxReturnable = activeQty;
+    const billed = Number((Number(s.selling_price) * activeQty).toFixed(2));
     const paid =
       s.amount_paid !== null && s.amount_paid !== undefined ? Number(s.amount_paid) : billed;
     const due =
       s.balance_due !== null && s.balance_due !== undefined
         ? Number(s.balance_due)
         : Number(Math.max(0, billed - paid).toFixed(2));
-    return { billed, paid, due };
+    return { soldQty, returnedQty, activeQty, maxReturnable, billed, paid, due };
   };
 
   const filteredSales = useMemo(() => {
@@ -97,7 +114,15 @@ export default function SalesPage({ user, onToast, refreshKey }) {
       if (dueFilter === 'Paid' && due > 0) return false;
 
       if (q) {
-        const hay = [s.customer_name, s.customer_phone, s.sku, s.item_name, s.notes]
+        const hay = [
+          s.customer_name,
+          s.customer_phone,
+          s.sku,
+          s.item_name,
+          s.sale_status,
+          s.return_reason,
+          s.notes
+        ]
           .join(' ')
           .toLowerCase();
         if (!hay.includes(q)) return false;
@@ -109,8 +134,8 @@ export default function SalesPage({ user, onToast, refreshKey }) {
   const totals = useMemo(() => {
     return filteredSales.reduce(
       (acc, s) => {
-        const { billed, paid, due } = getSaleAmounts(s);
-        acc.units += Number(s.quantity_sold) || 0;
+        const { activeQty, billed, paid, due } = getSaleAmounts(s);
+        acc.units += activeQty;
         acc.revenue += billed;
         acc.collected += paid;
         acc.pendingDue += due;
@@ -189,6 +214,50 @@ export default function SalesPage({ user, onToast, refreshKey }) {
     }
   };
 
+  const openReturnModal = (sale) => {
+    const { maxReturnable } = getSaleAmounts(sale);
+    const defaultRefund = Number((Number(sale.selling_price) * 1).toFixed(2));
+    setReturnSale(sale);
+    setReturnForm({
+      return_qty: Math.min(1, maxReturnable),
+      refund_amount: String(defaultRefund),
+      return_date: todayISO(),
+      payment_mode:
+        INSTALLMENT_PAYMENT_MODES.includes(sale.payment_mode) ? sale.payment_mode : 'UPI',
+      reason: '',
+      log_expense: true
+    });
+  };
+
+  const handleConfirmReturn = async (e) => {
+    e.preventDefault();
+    if (!returnSale) return;
+    setReturnBusy(true);
+    try {
+      const res = await apiRequest(`/api/sales/${encodeURIComponent(returnSale.id)}/return`, {
+        method: 'POST',
+        body: {
+          ...returnForm,
+          return_qty: Number(returnForm.return_qty),
+          refund_amount:
+            returnForm.refund_amount === '' ? undefined : Number(returnForm.refund_amount)
+        }
+      });
+      setSales((prev) => prev.map((row) => (row.id === returnSale.id ? res.sale : row)));
+      setReturnSale(null);
+      onToast(
+        res.expense
+          ? 'Return processed, stock restored, and refund logged in Expenses.'
+          : 'Return processed and stock restored to Inventory.',
+        'success'
+      );
+    } catch (err) {
+      onToast(err.message || 'Could not record return.', 'error');
+    } finally {
+      setReturnBusy(false);
+    }
+  };
+
   const handleDeleteSale = async () => {
     if (!deleteSale) return;
     setDeleteBusy(true);
@@ -222,6 +291,7 @@ export default function SalesPage({ user, onToast, refreshKey }) {
   };
 
   const instDue = installmentSale ? getSaleAmounts(installmentSale).due : 0;
+  const retMaxQty = returnSale ? getSaleAmounts(returnSale).maxReturnable : 1;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -230,10 +300,10 @@ export default function SalesPage({ user, onToast, refreshKey }) {
         <div className="kpi-card">
           <div className="kpi-label">Transactions</div>
           <div className="kpi-value tabular">{filteredSales.length}</div>
-          <div className="kpi-foot tabular">{totals.units} unit(s) sold</div>
+          <div className="kpi-foot tabular">{totals.units} active unit(s) sold</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Billed Revenue</div>
+          <div className="kpi-label">Net Revenue</div>
           <div className="kpi-value tabular">{formatINR(totals.revenue, currency)}</div>
           <div className="kpi-foot tabular">Collected: {formatINR(totals.collected, currency)}</div>
         </div>
@@ -247,7 +317,7 @@ export default function SalesPage({ user, onToast, refreshKey }) {
         <div className="kpi-card hero">
           <div className="kpi-label">Net Profit</div>
           <div className="kpi-value tabular">{formatINR(totals.profit, currency)}</div>
-          <div className="kpi-foot">After purchase cost</div>
+          <div className="kpi-foot">After purchase cost &amp; returns</div>
         </div>
       </div>
 
@@ -264,7 +334,7 @@ export default function SalesPage({ user, onToast, refreshKey }) {
               className="input"
               style={{ paddingLeft: 36 }}
               type="search"
-              placeholder="Search customer, phone, SKU, item..."
+              placeholder="Search customer, phone, SKU, item, return..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -349,7 +419,7 @@ export default function SalesPage({ user, onToast, refreshKey }) {
             </div>
             <div style={{ fontWeight: 700 }}>No sales records found</div>
             <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-              Completed sales and EMI transactions will appear here.
+              Completed sales, returns, and EMI transactions will appear here.
             </div>
           </div>
         ) : (
@@ -369,12 +439,20 @@ export default function SalesPage({ user, onToast, refreshKey }) {
               </thead>
               <tbody>
                 {filteredSales.map((s) => {
-                  const { billed, paid, due } = getSaleAmounts(s);
+                  const { soldQty, returnedQty, activeQty, maxReturnable, billed, paid, due } =
+                    getSaleAmounts(s);
                   return (
                     <tr key={s.id}>
                       <td className="tabular" style={{ whiteSpace: 'nowrap' }}>
                         <div>{s.sale_date}</div>
-                        <span className="badge badge-neutral">{s.payment_mode}</span>
+                        <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                          <span className="badge badge-neutral">{s.payment_mode}</span>
+                          {returnedQty > 0 && (
+                            <span className="badge badge-amber">
+                              {s.sale_status || 'Returned'} ({returnedQty})
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td>
                         <div style={{ fontWeight: 600 }}>{s.item_name}</div>
@@ -390,7 +468,10 @@ export default function SalesPage({ user, onToast, refreshKey }) {
                           </div>
                         )}
                       </td>
-                      <td className="tabular">{s.quantity_sold}</td>
+                      <td className="tabular">
+                        {activeQty}
+                        {returnedQty > 0 ? ` / ${soldQty}` : ''}
+                      </td>
                       <td className="tabular" style={{ fontWeight: 700 }}>
                         {formatINR(billed, currency)}
                       </td>
@@ -428,6 +509,17 @@ export default function SalesPage({ user, onToast, refreshKey }) {
                               <span>+ EMI</span>
                             </button>
                           )}
+                          {maxReturnable > 0 && (
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => openReturnModal(s)}
+                              title="Return item & restore stock"
+                            >
+                              <Undo2 size={13} />
+                              <span>Return</span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="btn btn-secondary btn-icon"
@@ -457,6 +549,176 @@ export default function SalesPage({ user, onToast, refreshKey }) {
           </div>
         )}
       </div>
+
+      {/* Return Item Modal */}
+      <Modal
+        open={Boolean(returnSale)}
+        title={`Return Item — ${returnSale?.item_name || ''}`}
+        onClose={() => setReturnSale(null)}
+        maxWidth={460}
+      >
+        {returnSale && (
+          <form
+            onSubmit={handleConfirmReturn}
+            style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+          >
+            <div
+              style={{
+                padding: '10px 13px',
+                borderRadius: 11,
+                background: 'var(--bg-subtle)',
+                fontSize: 13,
+                display: 'flex',
+                justifyContent: 'space-between'
+              }}
+              className="tabular"
+            >
+              <span>
+                SKU: <strong>{returnSale.sku}</strong>
+              </span>
+              <span>
+                Returnable Qty: <strong>{retMaxQty}</strong> · Unit Price:{' '}
+                <strong>{formatINR(returnSale.selling_price, currency)}</strong>
+              </span>
+            </div>
+
+            <div className="form-grid-2">
+              <div className="field">
+                <label className="field-label" htmlFor="ret-qty">
+                  Return Quantity
+                </label>
+                <input
+                  id="ret-qty"
+                  className="input"
+                  type="number"
+                  min="1"
+                  max={retMaxQty}
+                  required
+                  value={returnForm.return_qty}
+                  onChange={(e) => {
+                    const nextQty = Math.max(
+                      1,
+                      Math.min(retMaxQty, Number(e.target.value) || 1)
+                    );
+                    const autoRefund = Number(
+                      (Number(returnSale.selling_price) * nextQty).toFixed(2)
+                    );
+                    setReturnForm((f) => ({
+                      ...f,
+                      return_qty: nextQty,
+                      refund_amount: String(autoRefund)
+                    }));
+                  }}
+                />
+              </div>
+
+              <div className="field">
+                <label className="field-label" htmlFor="ret-refund">
+                  Refund Amount ({currency})
+                </label>
+                <input
+                  id="ret-refund"
+                  className="input"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max={Number((Number(returnSale.selling_price) * Number(returnForm.return_qty || 1)).toFixed(2))}
+                  value={returnForm.refund_amount}
+                  onChange={(e) =>
+                    setReturnForm((f) => ({ ...f, refund_amount: e.target.value }))
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="form-grid-2">
+              <div className="field">
+                <label className="field-label" htmlFor="ret-date">
+                  Return Date
+                </label>
+                <input
+                  id="ret-date"
+                  className="input"
+                  type="date"
+                  required
+                  value={returnForm.return_date}
+                  onChange={(e) =>
+                    setReturnForm((f) => ({ ...f, return_date: e.target.value }))
+                  }
+                />
+              </div>
+
+              <div className="field">
+                <label className="field-label" htmlFor="ret-mode">
+                  Refund Mode
+                </label>
+                <select
+                  id="ret-mode"
+                  className="select"
+                  value={returnForm.payment_mode}
+                  onChange={(e) =>
+                    setReturnForm((f) => ({ ...f, payment_mode: e.target.value }))
+                  }
+                >
+                  {INSTALLMENT_PAYMENT_MODES.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="field">
+              <label className="field-label" htmlFor="ret-reason">
+                Return Reason
+              </label>
+              <input
+                id="ret-reason"
+                className="input"
+                type="text"
+                placeholder="e.g. Size issue, color preference, defect"
+                value={returnForm.reason}
+                onChange={(e) => setReturnForm((f) => ({ ...f, reason: e.target.value }))}
+              />
+            </div>
+
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 9,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={returnForm.log_expense}
+                onChange={(e) =>
+                  setReturnForm((f) => ({ ...f, log_expense: e.target.checked }))
+                }
+              />
+              <span>Also record refund payout in Expenses ledger</span>
+            </label>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 4 }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setReturnSale(null)}
+              >
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={returnBusy}>
+                <Undo2 size={14} />
+                <span>{returnBusy ? 'Processing...' : 'Confirm Return & Restore Stock'}</span>
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
 
       {/* Collect EMI Installment Modal */}
       <Modal
@@ -709,7 +971,7 @@ export default function SalesPage({ user, onToast, refreshKey }) {
             checked={restoreStock}
             onChange={(e) => setRestoreStock(e.target.checked)}
           />
-          <span>Restore {deleteSale?.quantity_sold || 1} unit(s) back to Inventory stock</span>
+          <span>Restore remaining unit(s) back to Inventory stock</span>
         </label>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
